@@ -1,0 +1,13 @@
+# Build context for docker/blender/Dockerfile (built from this directory).
+# Allowlist: only what the Blender image COPYs.
+*
+!docker/blender/Dockerfile
+!docker/blender/run.py
+!blender_twin/
+!submit_to_deadline.py
+!randomize_textures.py
+!randomize_camera.py
+!randomize_background.py
+!place_distractor.py
+!rotate_bin.py
+**/__pycache__

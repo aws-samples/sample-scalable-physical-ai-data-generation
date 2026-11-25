@@ -1,0 +1,227 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+specificationVersion: 'jobtemplate-2023-09'
+name: Blender Twin Render (adaptor)
+
+# ---------------------------------------------------------------------------
+# OpenJD job template using the AWS Deadline Cloud Blender ADAPTOR
+# (`blender-openjd`), which keeps Blender open between frames ("sticky").
+# Structure follows a known-good adaptor template.
+#
+# The adaptor renders the settings SAVED IN THE .blend, so submit_to_deadline.py
+# bakes the quality/color settings into a prepared copy (prepare_scene.py) first.
+#
+# The adaptor is NOT on the conda channel here, so it is pip-installed at session
+# start in enter.sh (needs worker internet egress). Only `blender` comes from
+# the Conda queue environment (CondaPackages).
+# ---------------------------------------------------------------------------
+
+parameterDefinitions:
+- name: BlenderSceneFile
+  type: PATH
+  objectType: FILE
+  dataFlow: IN
+  userInterface:
+    control: CHOOSE_INPUT_FILE
+    label: Blender File
+    fileFilters:
+    - label: Blender Files
+      patterns: ["*.blend"]
+    - label: All Files
+      patterns: ["*"]
+  description: The (prepared) .blend scene to render.
+
+- name: RenderEngine
+  type: STRING
+  default: cycles
+  allowedValues: [eevee, workbench, cycles]
+
+- name: RenderScene
+  type: STRING
+  default: Scene
+  userInterface:
+    control: LINE_EDIT
+    label: Scene
+  description: The scene (by name) to render.
+
+- name: ViewLayer
+  type: STRING
+  default: ViewLayer
+  userInterface:
+    control: LINE_EDIT
+    label: View Layer
+  description: The view layer to render.
+
+- name: Frames
+  type: STRING
+  default: "1-1"
+  userInterface:
+    control: LINE_EDIT
+    label: Frames
+  description: Frames to render, e.g. 1-378 or 1-3,8,11-15.
+
+# Two cameras are rendered per job. The RenderBlender step below declares
+# Camera as a task dimension with these two values, so Deadline expands the
+# task space over (Camera x Frame): a SINGLE job (one jobId) produces both the
+# eye-in-hand and the external context views. Change these to render a different
+# pair of cameras.
+- name: CameraA
+  type: STRING
+  default: Cam_EyeInHand
+  userInterface:
+    control: LINE_EDIT
+    label: Camera A (eye-in-hand)
+  description: First camera (by name) to render from.
+
+- name: CameraB
+  type: STRING
+  default: Cam_Context
+  userInterface:
+    control: LINE_EDIT
+    label: Camera B (external context)
+  description: Second camera (by name) to render from.
+
+- name: OutputDir
+  type: PATH
+  objectType: DIRECTORY
+  dataFlow: OUT
+  default: "./output"
+  userInterface:
+    control: CHOOSE_DIRECTORY
+    label: Output Directory
+
+- name: OutputPattern
+  type: STRING
+  default: "frame_####"
+  userInterface:
+    control: LINE_EDIT
+    label: Output File Name
+  description: Output filename without extension (#### = frame number).
+
+- name: Format
+  type: STRING
+  default: PNG
+  allowedValues: [TARGA, TARGA_RAW, JPEG, IRIS, PNG, HDR, TIFF, OPEN_EXR,
+                  OPEN_EXR_MULTILAYER, CINEON, DPX, JPEG2000, WEBP]
+  userInterface:
+    control: DROPDOWN_LIST
+    label: Output File Format
+
+- name: GpuDevice
+  type: STRING
+  default: OPTIX
+  allowedValues: [OPTIX, CUDA, HIP, ONEAPI, METAL, NONE]
+  userInterface:
+    control: DROPDOWN_LIST
+    label: GPU Device
+  description: GPU compute backend for Cycles.
+
+# Consumed by the Conda queue environment. `blender-openjd` is the ADAPTOR's
+# conda package name (it IS on the deadline-cloud channel; the PyPI name
+# `deadline-cloud-for-blender` is not).
+- name: CondaPackages
+  type: STRING
+  default: blender=4.5.* blender-openjd=0.6.*
+  userInterface:
+    control: HIDDEN
+  description: Conda packages the queue environment installs on the worker.
+
+- name: CondaChannels
+  type: STRING
+  default: deadline-cloud
+  userInterface:
+    control: HIDDEN
+  description: Conda channels the queue environment resolves packages from.
+
+steps:
+- name: RenderBlender
+  parameterSpace:
+    taskParameterDefinitions:
+    # One task per frame -- the sticky adaptor keeps Blender open between them.
+    - name: Frame
+      type: INT
+      range: "{{Param.Frames}}"
+    # Camera is a task dimension with two values, so this step expands over
+    # (Camera x Frame) -- one job renders both views. See CameraA/CameraB above.
+    - name: Camera
+      type: STRING
+      range: ["{{Param.CameraA}}", "{{Param.CameraB}}"]
+  hostRequirements:
+    amounts:
+    - name: amount.worker.gpu
+      min: 1
+  stepEnvironments:
+  - name: Blender
+    description: Starts a persistent (sticky) Blender via the OpenJD adaptor.
+    script:
+      embeddedFiles:
+      - name: initData
+        filename: init-data.yaml
+        type: TEXT
+        data: |
+          scene_file: {{Param.BlenderSceneFile}}
+          render_engine: {{Param.RenderEngine}}
+          gpu_device: {{Param.GpuDevice}}
+          render_scene: {{Param.RenderScene}}
+          view_layer: {{Param.ViewLayer}}
+          output_dir: {{Param.OutputDir}}
+          output_file_name: {{Param.OutputPattern}}
+          output_format: {{Param.Format}}
+      - name: Enter
+        filename: enter.sh
+        type: TEXT
+        data: |
+          set -xeuo pipefail
+          # Persist the OptiX kernel cache on persistent storage so the one-time
+          # OptiX compile (~170s) is paid once per volume, not per cold worker.
+          export OPTIX_CACHE_PATH="${DEADLINE_PERSISTENT_MOUNT:-$HOME}/optix_cache"
+          mkdir -p "$OPTIX_CACHE_PATH" '{{Param.OutputDir}}'
+          echo "[optix] OPTIX_CACHE_PATH=$OPTIX_CACHE_PATH"
+
+          # The adaptor (`blender-openjd`) is provided by the Conda queue
+          # environment (see CondaPackages).
+          blender-openjd daemon start \
+              --connection-file '{{Session.WorkingDirectory}}/connection.json' \
+              --init-data 'file://{{Env.File.initData}}'
+      actions:
+        onEnter:
+          command: bash
+          args: ['{{Env.File.Enter}}']
+          cancelation:
+            mode: NOTIFY_THEN_TERMINATE
+          timeout: 3720
+        onExit:
+          command: blender-openjd
+          args:
+          - daemon
+          - stop
+          - --connection-file
+          - '{{Session.WorkingDirectory}}/connection.json'
+          cancelation:
+            mode: NOTIFY_THEN_TERMINATE
+          timeout: 120
+  script:
+    embeddedFiles:
+    - name: runData
+      filename: run-data.yaml
+      type: TEXT
+      data: |
+        frame: {{Task.Param.Frame}}
+        camera: '{{Task.Param.Camera}}'
+        # Namespace each camera's frames into its own subfolder so the two views
+        # (rendered in the same sticky session, sharing OutputDir) don't
+        # overwrite each other: OutputDir/<Camera>/frame_####.
+        output_file_name: '{{Task.Param.Camera}}/{{Param.OutputPattern}}'
+    actions:
+      onRun:
+        command: blender-openjd
+        args:
+        - daemon
+        - run
+        - --connection-file
+        - '{{Session.WorkingDirectory}}/connection.json'
+        - --run-data
+        - 'file://{{Task.File.runData}}'
+        cancelation:
+          mode: NOTIFY_THEN_TERMINATE

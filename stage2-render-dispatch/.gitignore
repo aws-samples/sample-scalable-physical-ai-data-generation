@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+
+# CDK
+cdk.out/
+cdk.out.*/
+.cdk.staging/
+cdk.context.json
+
+# Build output
+dist/
+*.js
+*.d.ts
+!jest.config.js
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+
+# Local Deadline Cloud config (account-specific profile + farm/queue ids +
+# telemetry uuid). The cloud pipeline reads farm/queue from SSM and auths via
+# the task role, so this is only used for LOCAL submit_to_deadline.py runs.
+deadline_config
+
+# Local Blender assets (large binaries) uploaded to S3, not source:
+#   blender_scene/  base .blend scene(s)
+#   blender_texture/ PBR texture .zip sets for randomization
+blender_scene/
+blender_texture/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python (Lambda) artifacts
+__pycache__/
+*.pyc
+
+# Local artifacts / generated output (not source)
+*.mp4
+*.pdf
+*.blend
+*.blend1
+scripts/preview/

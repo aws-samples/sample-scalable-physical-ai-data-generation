@@ -1,0 +1,9 @@
+# OS / editor
+.DS_Store
+.claude/
+.vscode/
+
+# Generated blog output
+*.pdf
+
+# Each stage keeps its own .gitignore for language/build artifacts.

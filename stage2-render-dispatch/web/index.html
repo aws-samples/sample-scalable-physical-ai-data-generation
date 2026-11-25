@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<!--
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  SPDX-License-Identifier: MIT-0
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Upload episodes</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        /* Wide enough that the two camera views get real screen space — they
+           share the row, so this is what sets the rendered video size. */
+        max-width: 1100px;
+        margin: 24px auto;
+        padding: 0 16px;
+        line-height: 1.5;
+      }
+      header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+      h1 { font-size: 1.4rem; margin-bottom: 4px; }
+      .sub { color: #888; margin-top: 0; font-size: 0.9rem; }
+      ul { list-style: none; padding: 0; }
+      li {
+        padding: 8px 10px;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 8px;
+        margin-bottom: 6px;
+      }
+      /* Delete button, then the name (which takes the slack), then the status
+         meta pushed to the right edge. */
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .name { font-weight: 600; word-break: break-all; flex: 1; min-width: 0; }
+      .meta { color: #888; font-size: 0.8rem; white-space: nowrap; }
+      .empty { color: #888; font-style: italic; }
+      video {
+        width: 100%;
+        margin-top: 4px;
+        border-radius: 6px;
+        background: #000;
+      }
+      /* Per-camera views laid out side by side (eye-in-hand + context). Falls
+         back to a single column on narrow screens. */
+      .views {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 6px;
+      }
+      .views.single { grid-template-columns: minmax(0, 1fr); }
+      @media (max-width: 560px) { .views { grid-template-columns: minmax(0, 1fr); } }
+      .view { display: flex; flex-direction: column; }
+      .view .cam-label {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #fff;
+      }
+      .view video { margin-top: 4px; }
+      a.download { font-size: 0.8rem; }
+      .uploader {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      .test-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.85rem;
+        color: #555;
+        cursor: pointer;
+        user-select: none;
+      }
+      #testFrames {
+        width: 64px;
+        padding: 2px 4px;
+        font-size: 0.85rem;
+        border-radius: 4px;
+        border: 1px solid rgba(128, 128, 128, 0.4);
+      }
+      #testFrames:disabled { opacity: 0.5; }
+      .tag-test {
+        display: inline-block;
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: #ede9fe;
+        color: #5b21b6;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .badge.received, .badge.reconstructing, .badge.submitted { background: #e5e7eb; color: #374151; }
+      .badge.rendering, .badge.encoding { background: #fef3c7; color: #92400e; }
+      .badge.done { background: #d1fae5; color: #065f46; }
+      .badge.failed { background: #fee2e2; color: #991b1b; }
+      .desc { color: #666; font-size: 0.82rem; margin-top: 4px; }
+      button.del {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 5px;
+        color: #991b1b;
+        border-color: rgba(153, 27, 27, 0.4);
+        line-height: 0;
+      }
+      button.del:hover { background: rgba(153, 27, 27, 0.08); }
+      button.del:disabled { opacity: 0.6; cursor: default; }
+      .err { margin-top: 6px; }
+      .err summary {
+        color: #991b1b;
+        font-size: 0.8rem;
+        cursor: pointer;
+        user-select: none;
+      }
+      .err pre {
+        margin: 6px 0 0;
+        max-height: 220px;
+        overflow: auto;
+        background: rgba(153, 27, 27, 0.06);
+        border: 1px solid rgba(153, 27, 27, 0.25);
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 0.72rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(128, 128, 128, 0.4);
+        background: transparent;
+        cursor: pointer;
+      }
+      #app { display: none; }
+      #login { text-align: center; margin-top: 80px; }
+    </style>
+  </head>
+  <body>
+    <div id="login">
+      <h1>Upload episodes</h1>
+      <p class="sub">Please sign in to view the feed.</p>
+      <button id="signin">Sign in</button>
+    </div>
+
+    <div id="app">
+      <header>
+        <div>
+          <h1>Episode renders</h1>
+          <p class="sub">Upload an episode JSON to render it. Status auto-refreshes every 3s.</p>
+        </div>
+        <button id="signout">Sign out</button>
+      </header>
+      <div class="uploader">
+        <input id="file" type="file" accept="application/json,.json" />
+        <button id="upload">Upload episode</button>
+        <label class="test-toggle" title="Render only the first N frames — quick to iterate on look/setup before a full render.">
+          <input id="testMode" type="checkbox" />
+          Test render — first
+          <input id="testFrames" type="number" min="1" max="2000" step="1" value="100" disabled />
+          frames
+        </label>
+        <label class="test-toggle" title="Render the episode this many times, each with its own environment, lighting, props and camera. Each variant is a full GPU render, so cost scales with this number.">
+          Variants
+          <input id="variants" type="number" min="1" max="10" step="1" value="1" />
+        </label>
+        <span id="uploadMsg" class="meta"></span>
+      </div>
+      <ul id="feed"><li class="empty">Loading…</li></ul>
+    </div>
+
+    <script>
+      const POLL_MS = 3000;
+      const TOKEN_KEY = "id_token";
+      const VERIFIER_KEY = "pkce_verifier";
+      let cfg = null;
+
+      // Trash-can icon (feather "trash-2"); inherits the button's color.
+      const TRASH_ICON =
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="none"' +
+        ' stroke="currentColor" stroke-width="2" stroke-linecap="round"' +
+        ' stroke-linejoin="round" aria-hidden="true">' +
+        '<polyline points="3 6 5 6 21 6"></polyline>' +
+        '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>' +
+        '<path d="M10 11v6"></path><path d="M14 11v6"></path>' +
+        '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>';
+
+      // ---- PKCE helpers ----------------------------------------------------
+      function base64url(bytes) {
+        return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+          .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      }
+      function randomVerifier() {
+        const a = new Uint8Array(32);
+        crypto.getRandomValues(a);
+        return base64url(a);
+      }
+      async function challengeFrom(verifier) {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+        return base64url(digest);
+      }
+      function redirectUri() {
+        return window.location.origin + "/";
+      }
+
+      // ---- OAuth flow ------------------------------------------------------
+      async function login() {
+        const verifier = randomVerifier();
+        sessionStorage.setItem(VERIFIER_KEY, verifier);
+        const challenge = await challengeFrom(verifier);
+        const url = new URL(cfg.cognitoDomain + "/oauth2/authorize");
+        url.searchParams.set("response_type", "code");
+        url.searchParams.set("client_id", cfg.clientId);
+        url.searchParams.set("redirect_uri", redirectUri());
+        url.searchParams.set("scope", "openid email");
+        url.searchParams.set("code_challenge", challenge);
+        url.searchParams.set("code_challenge_method", "S256");
+        window.location.assign(url.toString());
+      }
+
+      async function exchangeCode(code) {
+        const verifier = sessionStorage.getItem(VERIFIER_KEY);
+        const body = new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: cfg.clientId,
+          code,
+          redirect_uri: redirectUri(),
+          code_verifier: verifier || "",
+        });
+        const res = await fetch(cfg.cognitoDomain + "/oauth2/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        });
+        if (!res.ok) throw new Error("token exchange failed: " + res.status);
+        const tokens = await res.json();
+        sessionStorage.setItem(TOKEN_KEY, tokens.id_token);
+        sessionStorage.removeItem(VERIFIER_KEY);
+      }
+
+      function logout() {
+        sessionStorage.removeItem(TOKEN_KEY);
+        const url = new URL(cfg.cognitoDomain + "/logout");
+        url.searchParams.set("client_id", cfg.clientId);
+        url.searchParams.set("logout_uri", redirectUri());
+        window.location.assign(url.toString());
+      }
+
+      function tokenIsValid(token) {
+        try {
+          const payload = JSON.parse(atob(token.split(".")[1]));
+          return payload.exp * 1000 > Date.now();
+        } catch { return false; }
+      }
+
+      // ---- Feed rendering --------------------------------------------------
+      function formatSize(bytes) {
+        if (!bytes) return "";
+        const units = ["B", "KB", "MB", "GB"];
+        let i = 0, n = bytes;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+      }
+
+      function esc(s) {
+        return String(s ?? "").replace(/[<>&"]/g, (c) =>
+          ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c])
+        );
+      }
+
+      // Maps each pipeline stage to a friendly label + the AWS service doing
+      // the work, so the UI explains what's happening rather than showing a
+      // bare status code.
+      const STATUS_INFO = {
+        RECEIVED:       { label: "Received",       detail: "Stored in Amazon S3 — starting the pipeline (Step Functions)" },
+        RECONSTRUCTING: { label: "Building scene", detail: "Reconstructing the Blender animation on ECS Fargate" },
+        SUBMITTED:      { label: "Submitted",      detail: "Render job queued on AWS Deadline Cloud" },
+        RENDERING:      { label: "Rendering",      detail: "Rendering frames on AWS Deadline Cloud" },
+        ENCODING:       { label: "Encoding",       detail: "Stitching frames into MP4 on ECS Fargate (ffmpeg)" },
+        DONE:           { label: "Done",           detail: "" },
+        FAILED:         { label: "Failed",         detail: "Pipeline error — see details below" },
+      };
+
+      function statusLabel(it) {
+        const status = it.status || "RECEIVED";
+        const info = STATUS_INFO[status] || { label: status };
+        let text = info.label;
+        if (status === "RENDERING" && it.progress && it.progress.total) {
+          text = `${info.label} ${it.progress.done}/${it.progress.total}`;
+        }
+        return `<span class="badge ${status.toLowerCase()}">${esc(text)}</span>`;
+      }
+
+      function statusDescription(it) {
+        const status = it.status || "RECEIVED";
+        const info = STATUS_INFO[status];
+        if (!info) return "";
+        let detail = info.detail;
+        if (status === "RENDERING" && it.progress && it.progress.total) {
+          detail += ` — frame ${it.progress.done} of ${it.progress.total}`;
+        }
+        if (!detail) return "";
+        return `<div class="desc">${esc(detail)}</div>`;
+      }
+
+      function render(items) {
+        const feed = document.getElementById("feed");
+        if (!items || items.length === 0) {
+          feed.innerHTML = '<li class="empty">No episodes yet. Upload one to start.</li>';
+          return;
+        }
+        feed.innerHTML = items.map((it) => {
+          const meta = formatSize(it.size);
+          // Show just the original filename (basename), not the full S3 key.
+          const baseName = String(it.key || "").split("/").pop();
+          // Variants share one trajectory file, so the filename alone would
+          // repeat identically across their rows — name the variant too.
+          const displayName = it.variants > 1
+            ? `${baseName} · variant ${it.variant + 1}`
+            : baseName;
+          const name = esc(displayName);
+          const videoUrl = it.videoUrl ? esc(it.videoUrl) : "";
+
+
+
+          // Friendly label for a camera key (e.g. Cam_EyeInHand -> "Eye In Hand").
+          const camLabel = (cam) => esc(String(cam)
+            .replace(/^Cam[_-]?/, "")
+            .replace(/[_-]+/g, " ")
+            .replace(/\b\w/g, (c) => c.toUpperCase())
+            .trim() || cam);
+
+          // Per-camera videos (eye-in-hand + external context). Fall back to the
+          // single videoUrl for older records that predate multi-camera output.
+          const views = it.videoUrls && Object.keys(it.videoUrls).length
+            ? Object.entries(it.videoUrls)
+            : (videoUrl ? [["", it.videoUrl]] : []);
+
+          // Always show the external context view in the left column, with the
+          // eye-in-hand (and any other) view to its right.
+          views.sort(([a], [b]) =>
+            (/context/i.test(a) ? 0 : 1) - (/context/i.test(b) ? 0 : 1));
+
+          // Show the player(s) only once the render is DONE and a video exists.
+          // Each camera view is its own grid cell (label + player + download),
+          // so multiple cameras render as side-by-side columns.
+          const player = it.status === "DONE" && views.length
+            ? `<div class="views${views.length > 1 ? "" : " single"}">` +
+                views.map(([cam, url]) => {
+                  const u = esc(url);
+                  const cap = cam ? `<span class="cam-label">${camLabel(cam)}</span>` : "";
+                  const dl = `<a class="download" href="${u}" target="_blank" rel="noopener">download${cam ? " " + camLabel(cam) : ""}</a>`;
+                  return `<div class="view">${cap}<video controls preload="metadata" src="${u}"></video>${dl}</div>`;
+                }).join("") +
+              `</div>`
+            : "";
+          const err = it.status === "FAILED" && it.error
+            ? `<details class="err">
+                 <summary>Show error details</summary>
+                 <pre>${esc(it.error)}</pre>
+               </details>`
+            : "";
+
+          // Delete is only offered for terminal episodes (Done/Failed) — the
+          // backend also refuses to delete in-progress ones.
+          const isTerminal = it.status === "DONE" || it.status === "FAILED";
+          const del = isTerminal
+            ? `<button class="del" title="Delete" aria-label="Delete"
+                 data-sk="${esc(it.sk || "")}"
+                 data-key="${esc(it.key || "")}"
+                 data-videokey="${esc(it.videoKey || "")}">${TRASH_ICON}</button>`
+            : "";
+
+          const testTag = it.testFrames
+            ? `<span class="tag-test" title="Test render — first ${esc(it.testFrames)} frames only">test ${esc(it.testFrames)}f</span> `
+            : "";
+
+          // The variant is already spelled out in the name, so no badge here.
+          const nameTitle = it.variants > 1
+            ? ` title="One of ${esc(it.variants)} independently randomized renders of the same trajectory"`
+            : "";
+
+          return `<li>
+            <div class="row">
+              ${del}
+              <span class="name"${nameTitle}>${name}</span>
+              <span class="meta">${testTag}${statusLabel(it)}${meta ? " · " + meta : ""}</span>
+            </div>
+            ${statusDescription(it)}
+            ${player}
+            ${err}
+          </li>`;
+        }).join("");
+      }
+
+      // ---- Upload ----------------------------------------------------------
+      async function uploadEpisode() {
+        const token = sessionStorage.getItem(TOKEN_KEY);
+        const fileInput = document.getElementById("file");
+        const msg = document.getElementById("uploadMsg");
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) { msg.textContent = "Choose a JSON file first."; return; }
+        // Test render: cap the job to the first N frames for quick iteration.
+        // N comes from the user-editable input (clamped to a sane range).
+        const testChecked = document.getElementById("testMode").checked;
+        let testFrames = 0;
+        if (testChecked) {
+          const raw = parseInt(document.getElementById("testFrames").value, 10);
+          testFrames = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), 2000) : 100;
+        }
+        // Variants: render the same episode N times with independent
+        // randomization. Each one is a full GPU render, hence the cap.
+        const rawVariants = parseInt(document.getElementById("variants").value, 10);
+        const variants = Number.isFinite(rawVariants)
+          ? Math.min(Math.max(rawVariants, 1), 10)
+          : 1;
+        msg.textContent = "Requesting upload URL…";
+        try {
+          const res = await fetch(cfg.apiUrl + "/episodes", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + token,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ filename: file.name, testFrames, variants }),
+          });
+          if (!res.ok) throw new Error("presign failed: " + res.status);
+          const { uploadUrl } = await res.json();
+          msg.textContent = "Uploading…";
+          // Content-Type is intentionally not set: the presigned URL doesn't
+          // sign it, so letting the browser default it avoids signature issues.
+          const put = await fetch(uploadUrl, {
+            method: "PUT",
+            body: file,
+          });
+          if (!put.ok) throw new Error("upload failed: " + put.status);
+          msg.textContent = variants > 1
+            ? `Uploaded to S3 — starting ${variants} renders. Track progress below.`
+            : "Uploaded to S3 — pipeline starting. Track progress below.";
+          fileInput.value = "";
+          poll();
+        } catch (e) {
+          console.error(e);
+          msg.textContent = "Upload failed: " + e.message;
+        }
+      }
+
+      // ---- Delete ----------------------------------------------------------
+      async function deleteEpisode(sk, key, videoKey, btn) {
+        if (!sk) return;
+        if (!confirm("Delete this episode and its files? This can't be undone.")) return;
+        const token = sessionStorage.getItem(TOKEN_KEY);
+        btn.disabled = true;
+        btn.title = "Deleting…";
+        try {
+          const res = await fetch(cfg.apiUrl + "/episodes", {
+            method: "DELETE",
+            headers: {
+              Authorization: "Bearer " + token,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ sk, key, videoKey }),
+          });
+          if (!res.ok) throw new Error("delete failed: " + res.status);
+          lastSignature = null; // force a re-render on the next poll
+          poll();
+        } catch (e) {
+          console.error(e);
+          alert("Delete failed: " + e.message);
+          btn.disabled = false;
+          btn.title = "Delete";
+        }
+      }
+
+      let lastSignature = null;
+
+      async function poll() {
+        const token = sessionStorage.getItem(TOKEN_KEY);
+        if (!token) return;
+        try {
+          const res = await fetch(cfg.apiUrl + "/feed", {
+            headers: { Authorization: "Bearer " + token },
+            cache: "no-store",
+          });
+          if (res.status === 401) { logout(); return; }
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const data = await res.json();
+          // Only re-render when the set of files changes. Presigned URLs differ
+          // on every poll, so we key the signature on name + upload time — this
+          // avoids interrupting a video the user is currently playing.
+          const signature = (data.items || [])
+            .map((it) => {
+              const p = it.progress ? `${it.progress.done}/${it.progress.total}` : "";
+              const nVideos = it.videoUrls ? Object.keys(it.videoUrls).length : (it.videoUrl ? 1 : 0);
+              return `${it.key}@${it.uploadedAt}@${it.submittedAt}@${it.status}@${p}@${nVideos}`;
+            })
+            .join("|");
+          if (signature !== lastSignature) {
+            lastSignature = signature;
+            render(data.items);
+          }
+        } catch (err) {
+          console.error("feed poll failed", err);
+        }
+      }
+
+      function showApp() {
+        document.getElementById("login").style.display = "none";
+        document.getElementById("app").style.display = "block";
+        poll();
+        setInterval(poll, POLL_MS);
+      }
+
+      // ---- Bootstrap -------------------------------------------------------
+      async function init() {
+        cfg = await (await fetch("config.json", { cache: "no-store" })).json();
+        document.getElementById("signin").addEventListener("click", login);
+        document.getElementById("signout").addEventListener("click", logout);
+        document.getElementById("upload").addEventListener("click", uploadEpisode);
+        // Enable the frame-count input only when test render is checked.
+        const testMode = document.getElementById("testMode");
+        const testFrames = document.getElementById("testFrames");
+        testMode.addEventListener("change", () => {
+          testFrames.disabled = !testMode.checked;
+        });
+        // Event delegation: the <ul> persists across re-renders, its items don't.
+        document.getElementById("feed").addEventListener("click", (ev) => {
+          const btn = ev.target.closest("button.del");
+          if (!btn) return;
+          deleteEpisode(btn.dataset.sk, btn.dataset.key, btn.dataset.videokey, btn);
+        });
+
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get("code");
+        if (code) {
+          try {
+            await exchangeCode(code);
+          } catch (e) {
+            console.error(e);
+          }
+          // Strip ?code= from the URL so a refresh doesn't re-exchange.
+          window.history.replaceState({}, document.title, redirectUri());
+        }
+
+        const token = sessionStorage.getItem(TOKEN_KEY);
+        if (token && tokenIsValid(token)) {
+          showApp();
+        } else {
+          sessionStorage.removeItem(TOKEN_KEY);
+          document.getElementById("login").style.display = "block";
+        }
+      }
+
+      init().catch((e) => {
+        console.error("init failed", e);
+        document.getElementById("login").style.display = "block";
+      });
+    </script>
+  </body>
+</html>
